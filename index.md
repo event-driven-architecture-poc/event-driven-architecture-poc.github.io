@@ -102,6 +102,20 @@ The following message properties will be used:
 - `type` - Identifies the event type. Will be in the form of `<event>/<version>`, e.g. `order-created/v1`
 - `timestamp` - The published timestamp of the message.
 
+### Events
+- `order-cancelled`
+- `order-created`
+- `payment-auth-failed`
+- `payment-auth-in-progress`
+- `payment-captured`
+- `payment-refund-in-progress`
+- `payment-refunded`
+- `payment-updated`
+- `shipped`
+- `shipping-address-updated`
+- `shipping-preparation-in-progress`
+- `shipping-prepared`
+
 ### System Flow
 
 #### End-to-end Flow
