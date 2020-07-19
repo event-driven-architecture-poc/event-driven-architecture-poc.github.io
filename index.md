@@ -6,6 +6,7 @@ This project demonstrates the use of an event-driven microservice architecture u
 - [System Overview](#system-overview)
 - [Architecture](#architecture)
     + [Components](#components)
+    + [Events](#events)
     + [System Flow](#system-flow)
       - [End-to-end Flow](#end-to-end-flow)
       - [Payment Update](#payment-update)
