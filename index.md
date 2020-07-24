@@ -21,16 +21,16 @@ The e-commerce website will allow customers to place orders, view the status of 
 ### Order Lifecycle
 The lifecycle for a customer's order is as follows:
 1. A customer places an order through the website. Once the order has been created, the customer receives an order confirmation email notification.
-2. Payment authorization and capturing of funds occurs. If the authorization and capture fails, the customer receives an email notification indicating that the payment authorization failed.
-3. Once the payment gets authorized and captured successfully, the shipping preparation begins.
-4. The customer will receive an email notification once their order has shipped out for delivery.
+2. Payment authorization for the full dollar amount of the order total gets made on the customer's credit card. If the authorization fails, the customer receives an email notification indicating that the payment authorization failed.
+3. Once the payment gets authorized successfully, the shipping preparation begins.
+4. The customer will receive an email notification once their order has shipped out for delivery. Payment also gets captured at this point.
 
-### Customer Actions
+#### Customer Actions
 Customers will also be allowed to do the following:
 - View the current status of their order
-- Update their payment method for the order, given that the existing payment authorization and capture is not in progress or complete.
-- Update their shipping address for the order, given that shipping preparation is not in progress or complete.
-- Cancel their order, given that shipping preparation is not in progress or complete. The customer will receive an order cancelled email notification if their order gets cancelled. Additionally, their payment will be refunded if it was already captured.
+- Update their payment method for the order, given that the existing payment authorization and capture is not in progress or complete, or the order is not in a cancelled state.
+- Update their shipping address for the order, given that shipping preparation is not in progress or complete, or the order is not in a cancelled state.
+- Cancel their order, given that shipping preparation is not in progress or complete, or the order is not already in a cancelled state. The customer will receive an order cancelled email notification if their order gets cancelled. Additionally, their payment authorization will be voided if it had been authorized previously.
 
 ## Architecture
 
@@ -77,11 +77,15 @@ Each consuming application will have its own dedicated queue. In this instance, 
         - To the Orders exchange with routing patterns:
             - `orders.order-created`
             - `orders.order-cancelled`
+        - To the Payment exchange with routing patterns:
+            - `payment.payment-updated`
+        - To the Shipping exchange with routing patterns:
+            - `shipping.shipped` 
 - **shipping** queue:
     - The Shipping Service will consume events off this queue.
     - Bindings:
         - To the Payment exchange with routing patterns:
-            - `payment.payment-captured`
+            - `payment.payment-authorized`
 - **notification** queue:
     - The Notification Service will consume events off this queue.
     - Bindings:
@@ -108,9 +112,9 @@ The following message properties will be used:
 - `order-created`
 - `payment-auth-failed`
 - `payment-auth-in-progress`
+- `payment-auth-voided`
+- `payment-authorized`
 - `payment-captured`
-- `payment-refund-in-progress`
-- `payment-refunded`
 - `payment-updated`
 - `shipped`
 - `shipping-address-updated`
@@ -125,26 +129,35 @@ The following message properties will be used:
 3. The Order Event Service writes an `order-created` event to the event store and publishes the event.
 4. The following applications will subscribe to and process the `order-created` event:
     - **Notification Service**: Will send out an order received email to the customer.
-    - **Payment Service**: Will make an API call to the Order Event Service to write a `payment-auth-in-progress` event to the event store. Once complete, it will derive the current order state from the Order Event Service and attempt the payment authorization. If the payment authorization is successful, it will make another API call to the Order Event Service to write a `payment-captured` event to the event store and publish it. However, if the payment authorization fails, it will make an API call to the Order Event Service to write a `payment-auth-failed` event to the event store and publish it. The Order Notification Service would then consume the `payment-auth-failed` event and send out a payment authorization failed email to the customer.
-5. The Shipping Service will subscribe to and process the `payment-captured` event. It will make an API call to the Order Event Service to write a `shipping-preparation-in-progress` event to the event store. Once complete, it will derive the current order state from the Order Event Service and begin the shipping preparation process. If the shipping preparation is successful, it will make another API call to the Order Event Service to write a `shipping-prepared` event to the event store.
+    - **Payment Service**: The Payment Service will make an API call to the Order Event Service to write a `payment-auth-in-progress` event to the event store on the condition that the order is not in a cancelled state. Once complete, it will derive the current order state from the Order Event Service and attempt the payment authorization. If the payment authorization is successful, it will make another API call to the Order Event Service to write a `payment-authorized` event to the event store and publish it. However, if the payment authorization fails, it will make an API call to the Order Event Service to write a `payment-auth-failed` event to the event store and publish it. The Order Notification Service would then consume the `payment-auth-failed` event and send out a payment authorization failed email to the customer.
+5. The Shipping Service will subscribe to and process the `payment-authorized` event. It will make an API call to the Order Event Service to write a `shipping-preparation-in-progress` event to the event store on the condition that the order is not in a cancelled state. Once complete, it will derive the current order state from the Order Event Service and begin the shipping preparation process. If the shipping preparation is successful, it will make another API call to the Order Event Service to write a `shipping-prepared` event to the event store and publish it.
 6. The Shipping Service receives a request indicating the order has been shipped out. It will make an API call to the Order Event Service to write a `shipped` event to the event store and publish it.
-7. The Notification Service subscribes to and processes the `shipped` event and will send out an order shipped email to the customer.
+7. The following applications will subscribe to and process the `shipped` event:
+       - **Notification Service**: Will send out an order shipped email to the customer
+       - **Payment Service**: Will attempt a payment capture and then make an API call to the Order Event Service to write a `payment-captured` event to the event store.
 
 #### Payment Update
 Payment updates will work as follows: 
 1. The API Gateway receives a payment update request.
 2. The API Gateway makes an API call to the Order Event Service to update payment. This request will contain the updated payment information.
-3. The Order Event Service determines if the payment can be updated according to some business rules. In this instance, payment can only be updated if there are no `payment-auth-in-progress` or `order-cancelled` events in the event store.
-4. If the payment can be updated, the Order Event Service will write a `payment-updated` event to the event store. If not, an error response will be returned.
-5. When the Payment Service processes an `order-created` event, it will use the updated payment information.
-
+3. The Order Event Service determines if the payment can be updated according to some business rules. Payment cannot be updated under the following conditions:
+    - there is a `payment-auth-in-progress` event in the event store but no succeeding `payment-authorized` or `payment-auth-failed` event in the event store
+    - there is a `payment-authorized` event in the event store
+    - there is an `order-cancelled` event in the event store
+4. If the payment can be updated, the Order Event Service will write a `payment-updated` event to the event store and publish it. If not, an error response will be returned.
+5. The Payment Service will subscribe to and process the `payment-updated` event. 
+    - If the Payment Service receives an `order-created` event before it receives the `payment-updated` event, then it will discard the `order-created` event. When it receives the `payment-updated` event, it will attempt authorization.
+    - If the Payment Service receives a `payment-updated` event before it has received an `order-created` event, then it will simply discard the `payment-updated` event. When it receives the `order-created` event, it will attempt authorization.
+    - If the Payment Service had already previously processed an `order-created` event (in which case we know that it would have resulted in a payment authorization failure), then it will attempt authorization once it receives the `payment-updated` event. 
+    - If there were multiple payment updates done, only the latest `payment-updated` event will be processed.
+    
 #### Shipping Address Update
 Shipping address updates will work as follows: 
 1. The API Gateway receives a shipping address update request.
 2. The API Gateway makes an API call to the Order Event Service to update shipping address. This request will contain the updated shipping address information.
 3. The Order Event Service determines if the shipping address can be updated according to some business rules. In this instance, shipping address can only be updated if there are no `shipping-preparation-in-progress` or `order-cancelled` events in the event store.
 4. If the shipping address can be updated, the Order Event Service will write a `shipping-address-updated` event to the event store. If not, an error response will be returned.
-5. When the Shipping Service processes a `payment-captured` event, it will use the updated shipping address.
+5. When the Shipping Service processes a `payment-authorized` event, it will use the updated shipping address.
 
 #### Order Cancellation
 Order cancellations will work as follows: 
@@ -154,7 +167,7 @@ Order cancellations will work as follows:
 4. If the order can be cancelled, the Order Event Service will write an `order-cancelled` event to the event store and publish it. If not, an error response will be returned.
 5. The following applications will subscribe to and process the `order-cancelled` event:
     - **Notification Service**: Will send out an order cancelled email to the customer.
-    - **Payment Service**: Will make an API call to the Order Event Service to write a `payment-refund-in-progress` event to the event store. Once complete, it will derive the current order state from the Order Event Service and attempt the payment refund. The refund will be attempted until it is successful, at which point the application will make another API call to the Order Event Service to write a `payment-refunded` event to the event store.
+    - **Payment Service**: Will void the last authorization if authorization was complete previously. It will then make an API call to the Order Event Service to write a `payment-auth-voided` event to the event store. If the payment was never authorized, then the event will be discarded.
 
 ## FAQ
 
@@ -170,7 +183,7 @@ A message gets removed from a queue once the RabbitMQ broker receives an acknowl
 ### Q. What happens if a consuming application is unable to process an event?
 There are essentially three cases to consider as to why a consuming application is unable to process an event:
 1. If the event is malformed and there is nothing a consuming application can do to process this event, then the event gets discarded.
-2. If the event fails to be processed but can be retried at a later time, the event is re-queued and processed at a later time.
+2. If the event fails to be processed but can be retried at a later time, the event is re-queued and processed at a later time most likely with some sort of exponential backoff algorithm in case of multiple retries.
 3. If the consuming application is down, the event will not be delivered to it and will remain queued.
 
 ### Q. What happens if a consuming application fails to write to the event store after processing an event?
@@ -181,7 +194,7 @@ We introduce intermediary "in-progress" events as a mechanism to deal with any s
 
 _Example_: Let's imagine a scenario where a customer initiates a shipping address update request. Now at the same time, shipping preparation is about to begin. The condition for the shipping address update to be successful is that shipping preparation should not be underway or complete. Now with the use of an "in-progress" event, we can update the event store which will ultimately be used to check whether the shipping address update should take place or not. If the "in-progress" event has been written to the event store, then we immediately know that the shipping address update should be disallowed. On the other hand, if the "in-progress" event has not been written to the event store, the shipping address update can be completed.
 
-Now if we didn't use an "in-progress" event, there would still be ways to address this scenario however they could potentially introduce more complexity to the system. We could either determine whether shipping preparation is underway via the Order Shipping Service (potentially via an HTTP REST API), or we could allow the update to go through and publish an update event. The Order Shipping Service could then subscribe to this event and then determine if it needs to do undo anything it had completed prior to the update, for example it may have already prepared the shipping, so it would need a way to either undo that or update it.
+Now if we didn't use an "in-progress" event, there would still be ways to address this scenario however they could potentially introduce more complexity to the system. We could either determine whether shipping preparation is underway via the Order Shipping Service (potentially via an HTTP REST API), or we could allow the update to go through and publish an update event. The Order Shipping Service could then subscribe to this event and would then potentially need a compensating action to be performed if it had already undergone shipping preparation.
 
 ### Q. What happens if the Order Event Service writes to the event store but fails to publish the event?
 If the Order Event Service successfully writes to the event store but fails to publish the event, then secondary backup mechanisms can be put into place to reattempt to publish at a later time, for example a batch job.
