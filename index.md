@@ -133,8 +133,8 @@ The following message properties will be used:
 5. The Shipping Service will subscribe to and process the `payment-authorized` event. It will make an API call to the Order Event Service to write a `shipping-preparation-in-progress` event to the event store on the condition that the order is not in a cancelled state. Once complete, it will derive the current order state from the Order Event Service and begin the shipping preparation process. If the shipping preparation is successful, it will make another API call to the Order Event Service to write a `shipping-prepared` event to the event store and publish it.
 6. The Shipping Service receives a request indicating the order has been shipped out. It will make an API call to the Order Event Service to write a `shipped` event to the event store and publish it.
 7. The following applications will subscribe to and process the `shipped` event:
-       - **Notification Service**: Will send out an order shipped email to the customer
-       - **Payment Service**: Will attempt a payment capture and then make an API call to the Order Event Service to write a `payment-captured` event to the event store.
+   - **Notification Service**: Will send out an order shipped email to the customer
+   - **Payment Service**: Will attempt a payment capture and then make an API call to the Order Event Service to write a `payment-captured` event to the event store.
 
 #### Payment Update
 Payment updates will work as follows: 
